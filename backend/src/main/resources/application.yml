@@ -1,0 +1,227 @@
+spring:
+  application:
+    name: paysure
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/paysure}
+    username: ${SPRING_DATASOURCE_USERNAME:paysure}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    hikari:
+      maximum-pool-size: 20
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate   # Flyway owns the schema; Hibernate only validates it.
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+    deserialization:
+      # 250.5 must be rejected, never silently truncated to 250 paise.
+      accept-float-as-int: false
+  mvc:
+    problemdetails:
+      enabled: true
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+        max.block.ms: 3000
+        request.timeout.ms: 3000
+        delivery.timeout.ms: 5000
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: record               # commit the offset after each record's transaction has committed
+      missing-topics-fatal: false
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      timeout: 300ms
+      connect-timeout: 300ms
+
+server:
+  port: 8080
+  error:
+    include-stacktrace: never
+    include-message: never
+
+paysure:
+  sandbox:
+    vpa-suffix: paysure
+    # Every new sandbox account is funded from the simulated treasury with this amount (paise).
+    seed-balance-paise: 1000000         # ₹10,000.00
+    max-accounts-per-user: 3
+    max-vpas-per-account: 3
+    dev-tools-enabled: ${PAYSURE_DEV_TOOLS_ENABLED:false}
+    max-top-up-paise: 10000000          # ₹1,00,000.00 per dev top-up
+  security:
+    jwt:
+      secret: ${PAYSURE_JWT_SECRET:}
+      ttl-minutes: ${PAYSURE_JWT_TTL_MINUTES:60}
+      issuer: paysure-sandbox
+    cors-origins: ${PAYSURE_CORS_ORIGINS:http://localhost:5173}
+  seed:
+    enabled: ${PAYSURE_SEED_ENABLED:false}
+    demo-password: ${PAYSURE_DEMO_PASSWORD:}
+  payments:
+    max-amount-paise: 10000000          # ₹1,00,000.00 per payment
+    idempotency-ttl: 24h
+    not-found-grace: 30s
+    cleanup-enabled: true
+  events:
+    publisher: kafka                 # kafka | recording (tests)
+    publisher-enabled: true          # scheduled outbox publisher
+    poll-millis: 500
+    batch-size: 100
+    max-attempts: 20                 # then the outbox row is marked DEAD so it cannot block later events
+    send-timeout: 5s
+    max-backoff: 30s
+    consumers-enabled: true
+    create-topics: true
+    partitions: 3
+    replicas: 1
+  webhooks:
+    transport: http
+    worker-enabled: true
+    poll-millis: 1000
+    batch-size: 10
+    lease: 2m
+    max-attempts: 6
+    backoff-base: 5s
+    backoff-cap: 5m
+    replay-tolerance: 5m
+    max-endpoints-per-user: 5
+    require-https: true
+    local-allowlist: ${PAYSURE_WEBHOOK_LOCAL_ALLOWLIST:}     # e.g. localhost:8080 for the sandbox receiver demo
+    sandbox-receiver-enabled: ${PAYSURE_WEBHOOK_SANDBOX_RECEIVER:false}
+    sandbox-receiver-url: ${PAYSURE_WEBHOOK_SANDBOX_URL:http://localhost:8080/webhook-sandbox/receiver}
+    secret-key: ${PAYSURE_WEBHOOK_SECRET_KEY:}                # blank = derive from the JWT secret
+  risk:
+    enabled: true
+    mode: ALERT                      # ALERT = record alerts, never refuse; ENFORCE = refuse scores >= block-score
+    alert-score: 40
+    high-score: 70
+    block-score: 90
+    velocity-threshold: 8
+    velocity-window-seconds: 60
+    velocity-points: 35
+    repeat-threshold: 3
+    repeat-window-seconds: 60
+    repeat-points: 20
+    failure-threshold: 3
+    failure-window-seconds: 600
+    failure-points: 20
+    large-amount-paise: 5000000      # ₹50,000
+    large-amount-points: 25
+    new-recipient-points: 15
+    burst-threshold: 3
+    burst-window-seconds: 300
+    burst-points: 20
+  rate-limit:
+    enabled: true
+    trust-forwarded-for: ${PAYSURE_RATE_LIMIT_TRUST_XFF:false}
+    payments-per-user: { limit: 30, window-seconds: 60 }
+    payments-per-ip: { limit: 120, window-seconds: 60 }
+    auth-per-ip: { limit: 20, window-seconds: 60 }
+    collect-per-user: { limit: 30, window-seconds: 60 }
+  redis:
+    cooldown: 5s                     # skip Redis this long after an error
+  cache:
+    payment-status-enabled: true
+    unfinished-ttl: 30s
+    final-ttl: 5m
+  reconciliation:
+    scheduler-enabled: true
+    interval-millis: 15000        # worker period
+    min-age: 10s                  # leave fresh payments to the normal callback flow
+    batch-size: 50
+    lease: 60s                    # a crashed worker's claim expires after this
+    escalate-after-attempts: 5
+    escalate-after-age: 10m
+    post-settlement-window: 24h
+  reliability:
+    window-minutes: 60
+    snapshot-scheduler-enabled: true
+    snapshot-interval-millis: 300000
+  bank:
+    default-scenario: NORMAL_SUCCESS
+    default-delay-seconds: 5
+    latency-ms: ${PAYSURE_BANK_LATENCY_MS:0}
+    scheduler-enabled: true
+    tick-millis: 1000
+    seeded-chaos:
+      enabled: ${PAYSURE_BANK_CHAOS_ENABLED:false}
+      seed: ${PAYSURE_BANK_CHAOS_SEED:42}
+      fault-rate: 0.3
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  health:
+    redis:
+      enabled: false                 # Redis is an optimisation; its outage must not fail readiness
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+  metrics:
+    tags:
+      application: paysure
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+logging:
+  pattern:
+    level: "%5p [%X{requestId:-}]"
+---
+# Local development: `mvn spring-boot:run -Dspring-boot.run.profiles=dev`
+spring:
+  config:
+    activate:
+      on-profile: dev
+paysure:
+  sandbox:
+    dev-tools-enabled: ${PAYSURE_DEV_TOOLS_ENABLED:true}
+  security:
+    jwt:
+      # DEV ONLY. Any non-dev deployment must provide PAYSURE_JWT_SECRET.
+      secret: ${PAYSURE_JWT_SECRET:dev-only-insecure-secret-change-me-0123456789abcdef}
+  seed:
+    enabled: ${PAYSURE_SEED_ENABLED:true}
+    demo-password: ${PAYSURE_DEMO_PASSWORD:Sandbox@123}
+  bank:
+    latency-ms: ${PAYSURE_BANK_LATENCY_MS:150}
+  webhooks:
+    sandbox-receiver-enabled: true
+    local-allowlist: localhost:8080
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+management:
+  endpoint:
+    health:
+      show-details: when-authorized

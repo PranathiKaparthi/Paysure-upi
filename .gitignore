@@ -1,0 +1,25 @@
+# Java / Maven
+backend/target/
+*.class
+*.log
+hs_err_pid*
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/test-results/
+frontend/playwright-report/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Local env (never commit real secrets)
+.env
+*.local
+
+# Local assistant tooling
+.claude/

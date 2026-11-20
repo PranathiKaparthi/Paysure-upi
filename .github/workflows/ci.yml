@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (Java 17, PostgreSQL via Testcontainers)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      # Force Testcontainers in CI so the run fails loudly if Docker is unavailable.
+      - run: sh ./mvnw -B verify -Dpaysure.test.db=testcontainers
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-test-reports
+          path: backend/target/surefire-reports
+
+  frontend:
+    name: Frontend (lint, unit tests, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  compose:
+    name: Docker images and compose file
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp .env.example .env
+      - run: docker compose config --quiet
+      - run: docker compose build backend frontend
+
+  # Full-stack job: boots the whole Docker Compose stack (PostgreSQL, Redis, Kafka, backend, Prometheus, Grafana,
+  # frontend) and runs the acceptance script (criteria A-H) plus the Playwright browser tests against it.
+  e2e:
+    name: Full stack (docker compose, acceptance script, Playwright)
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure the stack
+        run: |
+          cp .env.example .env
+          # One CI runner = one IP, and the tests register many throw-away users: relax ONLY the per-IP auth limit.
+          echo "PAYSURE_RATE_LIMIT_AUTH_PER_IP_LIMIT=1000" >> .env
+      - name: Start the stack and wait until every healthcheck is green
+        run: docker compose up -d --build --wait --wait-timeout 420
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Acceptance script (criteria A-H)
+        run: python scripts/acceptance_demo.py http://localhost:8080
+      - name: Every metric the Grafana dashboard queries is exposed
+        run: python scripts/check-dashboard-metrics.py http://localhost:8080/actuator/prometheus monitoring/grafana/dashboards/paysure.json
+      - name: Prometheus scrapes the backend and Grafana has the provisioned dashboard
+        run: |
+          for i in $(seq 1 30); do
+            curl -fsS 'http://localhost:9090/api/v1/targets' | python3 -c "import sys,json; t=json.load(sys.stdin)['data']['activeTargets']; sys.exit(0 if t and all(x['health']=='up' for x in t) else 1)" && break
+            sleep 5
+          done
+          curl -fsS 'http://localhost:9090/api/v1/targets' | python3 -c "import sys,json; t=json.load(sys.stdin)['data']['activeTargets']; print([(x['labels'].get('job'), x['health']) for x in t]); sys.exit(0 if t and all(x['health']=='up' for x in t) else 1)"
+          GRAFANA_PASSWORD="$(grep '^GRAFANA_ADMIN_PASSWORD=' .env | cut -d= -f2-)"
+          curl -fsS -u "admin:${GRAFANA_PASSWORD}" 'http://localhost:3001/api/search?query=PaySure' | python3 -c "import sys,json; r=json.load(sys.stdin); print([d['title'] for d in r]); sys.exit(0 if r else 1)"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Playwright and Chromium
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Playwright end-to-end tests (against the frontend container)
+        working-directory: frontend
+        env:
+          E2E_BASE_URL: http://localhost:3000
+        run: npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          if-no-files-found: ignore
+      - name: Container logs (on failure)
+        if: failure()
+        run: docker compose logs --no-color --tail=300
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

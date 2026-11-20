@@ -1,0 +1,53 @@
+paysure:
+  sandbox:
+    dev-tools-enabled: true
+    seed-balance-paise: 1000000
+    max-accounts-per-user: 3
+    max-vpas-per-account: 3
+  security:
+    jwt:
+      secret: test-only-secret-not-for-any-real-use-0123456789
+      ttl-minutes: 15
+    bcrypt-strength: 4   # fast hashing in tests only
+    cors-origins: http://localhost:5173
+  seed:
+    enabled: false
+  payments:
+    not-found-grace: 0s
+    cleanup-enabled: false
+  events:
+    publisher: recording         # tests use a controllable publisher; Kafka tests override this
+    publisher-enabled: false     # tests drive OutboxPublisher explicitly
+    consumers-enabled: false
+    create-topics: false
+    max-attempts: 3
+  webhooks:
+    transport: recording
+    worker-enabled: false
+    sandbox-receiver-enabled: true
+    local-allowlist: localhost:*
+    max-attempts: 3
+    backoff-base: 1s
+    backoff-cap: 10s
+  risk:
+    large-amount-paise: 500000    # ₹5,000, so a funded sandbox account can trigger the rule
+  rate-limit:
+    enabled: false               # the rate-limit tests enable it
+  cache:
+    payment-status-enabled: false  # the cache tests enable it
+  reconciliation:
+    scheduler-enabled: false   # tests run the worker explicitly
+    min-age: 0s
+    escalate-after-attempts: 3
+  reliability:
+    snapshot-scheduler-enabled: false
+  bank:
+    scheduler-enabled: false   # tests drive the simulated bank clock explicitly via SimulatedBank.tick(...)
+    default-delay-seconds: 5
+    latency-ms: 0
+
+logging:
+  level:
+    org.testcontainers: WARN
+    io.zonky: WARN
+    com.paysure: INFO
